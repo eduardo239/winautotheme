@@ -16,7 +16,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Ou dê dois cliques em `install.bat`.
 
-A instalação copia o script para `%LOCALAPPDATA%\WinAutoTheme` e cria a tarefa agendada `WinAutoTheme` (no logon e a cada 5 minutos).
+A instalação copia o script para `%LOCALAPPDATA%\WinAutoTheme` e cria a tarefa agendada `WinAutoTheme`. Ela roda **sem janela** no logon, ao desbloquear o PC e nos horários claro/escuro (não a cada poucos minutos).
+
+Se a tarefa já estava instalada, rode `-Install` de novo para aplicar essa correção.
 
 ## Uso
 
@@ -49,6 +51,8 @@ Edite `%LOCALAPPDATA%\WinAutoTheme\config.json`:
 - `mode`: `fixed` usa `lightAt` / `darkAt`. `sunrise` usa nascer e pôr do sol nas coordenadas.
 - `latitude` / `longitude`: padrão em São Paulo. Troque pela sua cidade se usar `sunrise`.
 - `wallpaperLight` / `wallpaperDark`: caminhos opcionais de imagem.
+
+A tarefa usa `wscript.exe` + `WinAutoTheme.vbs` para não piscar o console do PowerShell.
 
 ## Desinstalação
 

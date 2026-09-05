@@ -407,8 +407,25 @@ function Invoke-ThemeApply {
     }
 
     $before = Get-CurrentThemeState
-    Set-WindowsTheme -Theme $desired.Theme -Config $config
+    $wantLight = $desired.Theme -eq 'Light'
+    $appsOk = -not [bool]$Config.applyToApps -or ($before.AppsLight -eq $wantLight)
+    $systemOk = -not [bool]$Config.applyToSystem -or ($before.SystemLight -eq $wantLight)
     $label = if ($desired.Theme -eq 'Light') { 'claro' } else { 'escuro' }
+
+    if ($appsOk -and $systemOk) {
+        if (-not $Quiet) {
+            Write-Host "Tema $label ja estava ativo."
+            Write-Host ("Horario claro: {0:HH:mm}  |  Horario escuro: {1:HH:mm}  |  Modo: {2}" -f `
+                $desired.Window.LightAt, $desired.Window.DarkAt, $desired.Window.Mode)
+        }
+        return [pscustomobject]@{
+            Theme  = $desired.Theme
+            Before = $before
+            Window = $desired.Window
+        }
+    }
+
+    Set-WindowsTheme -Theme $desired.Theme -Config $config
     Write-AppLog "Tema $label aplicado (apps=$($config.applyToApps); system=$($config.applyToSystem))."
 
     if (-not $Quiet) {
@@ -459,6 +476,24 @@ function Install-WinAutoTheme {
     $targetScript = Join-Path $Script:InstallDir 'WinAutoTheme.ps1'
     Copy-Item -LiteralPath $sourceScript -Destination $targetScript -Force
 
+    $targetVbs = Join-Path $Script:InstallDir 'WinAutoTheme.vbs'
+    $sourceVbs = Join-Path (Get-ScriptRoot) 'WinAutoTheme.vbs'
+    if (Test-Path -LiteralPath $sourceVbs) {
+        Copy-Item -LiteralPath $sourceVbs -Destination $targetVbs -Force
+    } else {
+        $vbs = @(
+            'Option Explicit'
+            'Dim fso, shell, dir, ps1, cmd'
+            'Set fso = CreateObject("Scripting.FileSystemObject")'
+            'dir = fso.GetParentFolderName(WScript.ScriptFullName)'
+            'ps1 = dir & "\WinAutoTheme.ps1"'
+            'cmd = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & ps1 & """ -Apply"'
+            'Set shell = CreateObject("WScript.Shell")'
+            'shell.Run cmd, 0, False'
+        ) -join "`r`n"
+        [System.IO.File]::WriteAllText($targetVbs, $vbs)
+    }
+
     $configPath = Join-Path $Script:InstallDir 'config.json'
     if (-not (Test-Path -LiteralPath $configPath)) {
         $sourceConfig = Join-Path (Get-ScriptRoot) 'config.json'
@@ -471,38 +506,64 @@ function Install-WinAutoTheme {
 
     Unregister-ScheduledTask -TaskName $Script:TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-    $argument = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -Apply' -f $targetScript
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argument
+    $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+    $action = New-ScheduledTaskAction -Execute $wscript -Argument ('//nologo "{0}"' -f $targetVbs) -WorkingDirectory $Script:InstallDir
 
-    $now = Get-Date
-    $start = $now.Date.AddMinutes(([math]::Floor($now.TimeOfDay.TotalMinutes / 5) * 5) + 5)
-    $repeatTrigger = New-ScheduledTaskTrigger -Once -At $start -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
-    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $window = Get-ScheduleWindow -Config (Get-ThemeConfig)
+    $triggers = @(
+        (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
+        (New-ScheduledTaskTrigger -Daily -At $window.LightAt)
+        (New-ScheduledTaskTrigger -Daily -At $window.DarkAt)
+    )
 
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries `
         -StartWhenAvailable `
         -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
-        -MultipleInstances IgnoreNew `
-        -Hidden
+        -MultipleInstances IgnoreNew
 
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
     Register-ScheduledTask `
         -TaskName $Script:TaskName `
         -Action $action `
-        -Trigger @($logonTrigger, $repeatTrigger) `
+        -Trigger $triggers `
         -Settings $settings `
         -Principal $principal `
         -Description 'Alterna o tema do Windows 11 (claro de dia, escuro a noite).' `
         -Force | Out-Null
 
+    try {
+        Add-SessionUnlockTrigger
+    } catch {
+        Write-Warning "Nao foi possivel adicionar o disparo ao desbloquear a sessao: $($_.Exception.Message)"
+    }
+
     Invoke-ThemeApply | Out-Null
     Write-Host "Instalado em $Script:InstallDir"
-    Write-Host "Tarefa agendada '$Script:TaskName' criada (logon + a cada 5 minutos)."
+    Write-Host "Tarefa agendada '$Script:TaskName' criada (logon, desbloqueio, $($window.LightAt.ToString('HH:mm')) e $($window.DarkAt.ToString('HH:mm')))."
     Write-Host "Edite o arquivo de configuracao se quiser mudar os horarios:"
     Write-Host "  $configPath"
+}
+
+function Add-SessionUnlockTrigger {
+    $taskXml = Export-ScheduledTask -TaskName $Script:TaskName
+    if ($taskXml -match 'SessionStateChangeTrigger') { return }
+
+    $userId = [System.Security.SecurityElement]::Escape(
+        [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    )
+    $unlockXml = @"
+    <SessionStateChangeTrigger>
+      <Enabled>true</Enabled>
+      <StateChange>SessionUnlock</StateChange>
+      <UserId>$userId</UserId>
+    </SessionStateChangeTrigger>
+"@
+    if ($taskXml -notmatch '</Triggers>') { return }
+    $taskXml = $taskXml.Replace('</Triggers>', ($unlockXml + "`r`n  </Triggers>"))
+    Register-ScheduledTask -TaskName $Script:TaskName -Xml $taskXml -Force | Out-Null
 }
 
 function Uninstall-WinAutoTheme {
@@ -521,5 +582,6 @@ switch ($PSCmdlet.ParameterSetName) {
     'Install'   { Install-WinAutoTheme }
     'Uninstall' { Uninstall-WinAutoTheme }
     'Status'    { Show-ThemeStatus }
+    'Apply'     { Invoke-ThemeApply -Quiet:$Apply | Out-Null }
     default     { Invoke-ThemeApply | Out-Null }
 }
