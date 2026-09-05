@@ -1,0 +1,11 @@
+{
+  "mode": "fixed",
+  "lightAt": "07:00",
+  "darkAt": "19:00",
+  "latitude": -23.5505,
+  "longitude": -46.6333,
+  "applyToApps": true,
+  "applyToSystem": true,
+  "wallpaperLight": "",
+  "wallpaperDark": ""
+}
