@@ -25,6 +25,10 @@
 .EXAMPLE
     .\WinAutoTheme.ps1 -Status
     Mostra o tema atual, o horario de troca e o modo configurado.
+
+.EXAMPLE
+    .\WinAutoTheme.ps1 -FixSearch
+    Reinicia o processo da pesquisa do menu Iniciar (corrige o painel vazio).
 #>
 [CmdletBinding(DefaultParameterSetName = 'Apply')]
 param(
@@ -44,7 +48,10 @@ param(
     [switch]$Uninstall,
 
     [Parameter(ParameterSetName = 'Status')]
-    [switch]$Status
+    [switch]$Status,
+
+    [Parameter(ParameterSetName = 'FixSearch')]
+    [switch]$FixSearch
 )
 
 Set-StrictMode -Version Latest
@@ -246,21 +253,21 @@ using System.Runtime.InteropServices;
 namespace WinAutoTheme {
     public static class NativeMethods {
         [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        public static extern IntPtr SendMessageTimeout(
-            IntPtr hWnd,
-            uint Msg,
-            UIntPtr wParam,
-            string lParam,
-            uint fuFlags,
-            uint uTimeout,
-            out UIntPtr lpdwResult);
-
-        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         public static extern bool SystemParametersInfo(
             uint uiAction,
             uint uiParam,
             string pvParam,
             uint fWinIni);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        public static extern bool SendNotifyMessage(
+            IntPtr hWnd,
+            uint Msg,
+            UIntPtr wParam,
+            string lParam);
+
+        [DllImport("uxtheme.dll", EntryPoint = "#136")]
+        public static extern void RefreshImmersiveColorPolicyState();
     }
 }
 "@
@@ -268,22 +275,22 @@ namespace WinAutoTheme {
 
 function Send-ThemeChangeBroadcast {
     Initialize-NativeMethods
+    [WinAutoTheme.NativeMethods]::RefreshImmersiveColorPolicyState()
 
     $hwndBroadcast = [IntPtr]0xffff
     $wmSettingChange = [uint32]0x001A
-    $smtoAbortIfHung = [uint32]0x0002
-    $result = [UIntPtr]::Zero
+    [void][WinAutoTheme.NativeMethods]::SendNotifyMessage(
+        $hwndBroadcast,
+        $wmSettingChange,
+        [UIntPtr]::Zero,
+        'ImmersiveColorSet'
+    )
+}
 
-    foreach ($payload in @('ImmersiveColorSet', 'WindowsThemeElement')) {
-        [void][WinAutoTheme.NativeMethods]::SendMessageTimeout(
-            $hwndBroadcast,
-            $wmSettingChange,
-            [UIntPtr]::Zero,
-            $payload,
-            $smtoAbortIfHung,
-            1000,
-            [ref]$result
-        )
+function Repair-WindowsSearchUi {
+    foreach ($name in @('SearchHost', 'SearchApp', 'SearchUI', 'StartMenuExperienceHost')) {
+        Get-Process -Name $name -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -362,6 +369,8 @@ function Set-WindowsTheme {
     }
 
     Send-ThemeChangeBroadcast
+    Start-Sleep -Milliseconds 400
+    Repair-WindowsSearchUi
 }
 
 function Write-AppLog {
@@ -541,6 +550,7 @@ function Install-WinAutoTheme {
     }
 
     Invoke-ThemeApply | Out-Null
+    Repair-WindowsSearchUi
     Write-Host "Instalado em $Script:InstallDir"
     Write-Host "Tarefa agendada '$Script:TaskName' criada (logon, desbloqueio, $($window.LightAt.ToString('HH:mm')) e $($window.DarkAt.ToString('HH:mm')))."
     Write-Host "Edite o arquivo de configuracao se quiser mudar os horarios:"
@@ -582,6 +592,7 @@ switch ($PSCmdlet.ParameterSetName) {
     'Install'   { Install-WinAutoTheme }
     'Uninstall' { Uninstall-WinAutoTheme }
     'Status'    { Show-ThemeStatus }
+    'FixSearch' { Repair-WindowsSearchUi; Write-Host 'Pesquisa do menu Iniciar reiniciada.' }
     'Apply'     { Invoke-ThemeApply -Quiet:$Apply | Out-Null }
     default     { Invoke-ThemeApply | Out-Null }
 }

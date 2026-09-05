@@ -28,6 +28,7 @@ Se a tarefa já estava instalada, rode `-Install` de novo para aplicar essa corr
 | `.\WinAutoTheme.ps1 -Light` | Força o tema claro |
 | `.\WinAutoTheme.ps1 -Dark` | Força o tema escuro |
 | `.\WinAutoTheme.ps1 -Status` | Mostra tema atual e horários |
+| `.\WinAutoTheme.ps1 -FixSearch` | Corrige o menu Iniciar se a pesquisa ficar em branco |
 | `.\WinAutoTheme.ps1 -Uninstall` | Remove tarefa e arquivos |
 
 ## Configuração
